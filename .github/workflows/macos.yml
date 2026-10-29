@@ -1,0 +1,112 @@
+name: macOS
+
+on:
+  push:
+    branches: [main]
+    tags: ['v[0-9]*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            zig_arch: aarch64
+          - runner: macos-15-intel
+            arch: x86_64
+            zig_arch: x86_64
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Zig 0.17.0
+        env:
+          ZIG_ARCH: ${{ matrix.zig_arch }}
+        run: |
+          curl --fail --location --retry 3 https://ziglang.org/download/index.json -o "$RUNNER_TEMP/zig-index.json"
+          python3 - "$RUNNER_TEMP/zig-index.json" "$ZIG_ARCH" > "$RUNNER_TEMP/zig-download" <<'PY'
+          import json, sys
+          artifact = json.load(open(sys.argv[1]))['0.17.0'][sys.argv[2] + '-macos']
+          print(artifact['tarball'])
+          print(artifact['shasum'])
+          PY
+          url=$(sed -n '1p' "$RUNNER_TEMP/zig-download")
+          checksum=$(sed -n '2p' "$RUNNER_TEMP/zig-download")
+          curl --fail --location --retry 3 "$url" -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "$checksum  $RUNNER_TEMP/zig.tar.xz" | shasum -a 256 -c -
+          mkdir "$RUNNER_TEMP/zig"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components=1
+          echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+      - name: Check version and formatting
+        run: |
+          test "$(zig version)" = 0.17.0
+          if [ "$GITHUB_REF_TYPE" = tag ]; then test "$GITHUB_REF_NAME" = "v$(cat VERSION)"; fi
+          zig fmt --check build.zig main.zig src
+      - name: Test
+        run: zig build test
+      - name: Build and package
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$ARCH"
+          sh scripts/package.sh
+      - name: Verify installer
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          version=$(cat VERSION)
+          expanded="$RUNNER_TEMP/soundy-installer"
+          pkgutil --expand-full "dist/Soundy-Minified-v${version}-macos-${ARCH}.pkg" "$expanded"
+          app="$expanded/Soundy-Minified-component.pkg/Payload/Soundy Minified.app"
+          cmp assets/icons/Soundy.icns "$app/Contents/Resources/Soundy.icns"
+          test -s "$expanded/Resources/welcome.rtfd/TXT.rtf"
+          test -s "$expanded/Resources/conclusion.rtfd/TXT.rtf"
+          codesign --verify --strict "$app"
+          lipo "$app/Contents/MacOS/soundy-minified" -verify_arch "$ARCH"
+          test "$("$app/Contents/MacOS/soundy-minified" --version)" = "Soundy Minified $version"
+          (cd "$app/Contents/Resources/Sounds" && shasum -a 256 -c manifest.sha256 > /dev/null)
+          "$app/Contents/MacOS/soundy-minified" --check
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: Soundy-Minified-macos-${{ matrix.arch }}
+          path: |
+            dist/*.pkg
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: Soundy-Minified-macos-*
+          merge-multiple: true
+          path: artifacts
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd artifacts
+          sha256sum --check *.sha256
+          gh release create "$GITHUB_REF_NAME" *.pkg *.zip *.sha256 \
+            --verify-tag --generate-notes --title "Soundy Minified $GITHUB_REF_NAME"

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<installer-gui-script minSpecVersion="2">
+  <title>Soundy Minified @VERSION@</title>
+  <welcome file="welcome.rtf" mime-type="text/rtf"/>
+  <conclusion file="conclusion.rtf" mime-type="text/rtf"/>
+  <options customize="never" require-scripts="false" hostArchitectures="@ARCH@"/>
+  <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+  <volume-check script="true">
+    <allowed-os-versions><os-version min="13.0"/></allowed-os-versions>
+  </volume-check>
+  <choices-outline><line choice="soundy"/></choices-outline>
+  <choice id="soundy" title="Soundy Minified" description="Звуки клавиатуры и мыши" visible="false">
+    <pkg-ref id="dev.soundy.minified.app"/>
+  </choice>
+  <pkg-ref id="dev.soundy.minified.app">Soundy-Minified-component.pkg</pkg-ref>
+  <pkg-ref id="dev.soundy.minified.app">
+    <must-close><app id="dev.soundy.minified.app"/></must-close>
+  </pkg-ref>
+</installer-gui-script>
