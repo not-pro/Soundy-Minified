@@ -14,7 +14,12 @@ comptime {
 pub fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
     const pool = n.pool();
     defer n.drain(pool);
-    i18n.language = i18n.load(n.m0(n.Id, n.cls("NSUserDefaults"), "standardUserDefaults"));
+    i18n.init() catch |err| {
+        n.log(@errorName(err));
+        return 1;
+    };
+    defer i18n.deinit();
+    i18n.setLanguage(i18n.load(n.m0(n.Id, n.cls("NSUserDefaults"), "standardUserDefaults")));
     const bundle = n.m0(n.Id, n.cls("NSBundle"), "mainBundle");
     const bundled = n.m1(n.Id, n.m0(n.Id, bundle, "resourcePath"), "stringByAppendingPathComponent:", n.str("Sounds"));
     const fm = n.m0(n.Id, n.cls("NSFileManager"), "defaultManager");

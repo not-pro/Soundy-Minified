@@ -78,6 +78,10 @@ pub extern "c" fn dispatch_queue_create([*:0]const u8, Id) Id;
 pub extern "c" fn dispatch_sync_f(Id, Id, *const fn (Id) callconv(.c) void) void;
 pub extern "c" fn dispatch_async_f(Id, Id, *const fn (Id) callconv(.c) void) void;
 pub extern "c" fn dispatch_release(Id) void;
+extern "c" var _dispatch_main_q: u8;
+pub fn mainQueue() Id {
+    return @ptrCast(&_dispatch_main_q);
+}
 
 pub extern "CoreGraphics" fn CGPreflightListenEventAccess() bool;
 pub extern "CoreGraphics" fn CGRequestListenEventAccess() bool;

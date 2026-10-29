@@ -42,6 +42,10 @@ pub fn run(smoke: bool) !void {
     if (exists("volume")) audio.controls.volume = @intCast(std.math.clamp(integer("volume"), 0, 100));
     try audio.start();
     defer audio.stop();
+    audio.on_selection_error = selectionFailed;
+    defer {
+        audio.on_selection_error = null;
+    }
     const class = n.objc_allocateClassPair(n.cls("NSObject"), "SoundyMinifiedDelegate", 0);
     if (class == null) return error.DelegateClassFailed;
     const methods = .{
@@ -114,11 +118,19 @@ fn action(_: Id, _: n.Sel, sender: Id) callconv(.c) void {
             return;
         },
         100...139 => {
+            audio.select(@intCast(tag - 100), audio.controls.mouse_profile) catch |err| {
+                showError(@errorName(err));
+                return;
+            };
             audio.controls.profile = @intCast(tag - 100);
             save("profile", tag - 100);
             audio.preview(false);
         },
         200...215 => {
+            audio.select(audio.controls.profile, @intCast(tag - 200)) catch |err| {
+                showError(@errorName(err));
+                return;
+            };
             audio.controls.mouse_profile = @intCast(tag - 200);
             save("mouseProfile", tag - 200);
             audio.preview(true);
@@ -128,12 +140,20 @@ fn action(_: Id, _: n.Sel, sender: Id) callconv(.c) void {
             save("volume", tag - 300);
         },
         500...502 => {
-            i18n.language = @intCast(tag - 500);
-            n.m2(void, defaults, "setObject:forKey:", n.str(i18n.codes[i18n.language]), n.str("language"));
+            i18n.setLanguage(@intCast(tag - 500));
+            n.m2(void, defaults, "setObject:forKey:", n.str(i18n.codes[i18n.current()]), n.str("language"));
         },
         else => return,
     }
     refresh();
+}
+fn selectionFailed(previous: audio.Selection, message: []const u8) void {
+    audio.controls.profile = previous.profile;
+    audio.controls.mouse_profile = previous.mouse_profile;
+    save("profile", previous.profile);
+    save("mouseProfile", previous.mouse_profile);
+    refresh();
+    showError(message);
 }
 fn item(parent: Id, title: []const u8, tag: i64, checked: bool) Id {
     const result = n.m3(Id, n.alloc("NSMenuItem"), "initWithTitle:action:keyEquivalent:", n.str(title), if (tag == 0) @as(n.Sel, null) else n.sel("action:"), n.str(""));
@@ -186,7 +206,7 @@ fn refresh() void {
     const volume_menu = submenu(i18n.text(.Volume));
     for ([_]u8{ 0, 10, 25, 50, 75, 100 }) |volume| _ = item(volume_menu, std.fmt.bufPrint(&buffer, "{d}%", .{volume}) catch unreachable, @as(i64, volume) + 300, controls.volume == volume);
     const language_menu = submenu(i18n.text(.LanguageMenu));
-    for (i18n.names, 0..) |name, index| _ = item(language_menu, name, @as(i64, @intCast(index)) + 500, i18n.language == index);
+    for (i18n.names, 0..) |name, index| _ = item(language_menu, name, @as(i64, @intCast(index)) + 500, i18n.current() == index);
     separator();
     _ = item(menu, i18n.text(.Quit), 5, false);
     const button = n.m0(Id, status, "button");
@@ -202,6 +222,7 @@ fn findSubmenu(key: i18n.Text) Id {
     return n.m0(Id, n.m1(Id, menu, "itemWithTitle:", n.str(i18n.text(key))), "submenu");
 }
 fn smokeFinish(_: Id, _: n.Sel, _: Id) callconv(.c) void {
+    audio.smokeTest();
     for (0..3) |language| {
         const option = n.m1(Id, findSubmenu(.LanguageMenu), "itemAtIndex:", @as(i64, @intCast(language)));
         action(delegate, n.sel("action:"), option);
@@ -240,6 +261,7 @@ fn smokeFinish(_: Id, _: n.Sel, _: Id) callconv(.c) void {
     action(delegate, n.sel("action:"), n.m1(Id, menu, "itemAtIndex:", @as(i64, 0)));
     require(audio.controls.enabled != old);
     require((n.m1(n.Bool, defaults, "boolForKey:", n.str("enabled")) != 0) == audio.controls.enabled);
+    audio.smokeAssertSelection();
     n.print("OK: keyboard, mouse, volume and pause actions persist; isolated smoke settings\n");
     n.m1(void, app, "terminate:", nil);
 }

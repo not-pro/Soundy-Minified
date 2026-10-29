@@ -45,3 +45,7 @@ sh scripts/package.sh
 生成的 PKG、ZIP 和校验和文件位于 `dist/` 目录。安装程序页面由 `scripts/installer-pages.swift` 生成，配置位于 `macos/installer/`。如需重新生成图标，请运行 `swift scripts/export-icons.swift`。
 
 应用已使用 Zig 重写，无第三方运行时依赖，直接调用 AppKit、CoreGraphics 和 AVFAudio。Swift 仅用于生成安装器页面和图标。Bundle ID 为 `dev.soundy.minified.app`，设置和输入监控权限与原版独立。独立安装路径为 `/Applications/Soundy Minified.app`，紫蓝色图标可与原版区分，两者可以同时安装。
+
+内存仅保留所选键盘音效包和鼠标音效对，最多 12 个缓冲区。切换时在串行音频队列中加载新音效，随后释放旧缓冲区和不再需要的节点，复用音频引擎及兼容的语音池；加载失败时保留原有音效和设置。`--check` 仍检查全部 240 个 WAV 文件。
+
+翻译和语言名称位于 `assets/i18n.json`，应用启动时读取一次，验证所有语言和消息键，并保留自己的 UTF-8 字符串。修改翻译无需改动 Zig 代码。

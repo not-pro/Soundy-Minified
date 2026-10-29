@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
     });
     const config = b.addOptions();
     config.addOption([]const u8, "source_sounds", b.root.joinString(b.allocator, "assets/sounds") catch @panic("OOM"));
+    config.addOption([]const u8, "source_translations", b.root.joinString(b.allocator, "assets/i18n.json") catch @panic("OOM"));
     module.addOptions("config", config);
     module.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
     module.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/lib" }) });

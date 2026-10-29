@@ -56,14 +56,25 @@ const Voice = struct { node: Id = null, busy_until: u64 = 0 };
 const Pool = struct { format: Id = null, voices: [6]Voice = @splat(.{}) };
 const Component = extern struct { kind: u32, subtype: u32, manufacturer: u32, flags: u32 = 0, mask: u32 = 0 };
 
+pub const Selection = struct {
+    profile: u8 = 0,
+    mouse_profile: u8 = 0,
+
+    fn includes(self: Selection, index: usize) bool {
+        return std.mem.startsWith(u8, catalog.files[index], catalog.keyboards[self.profile].prefix) or
+            catalog.mouseSample(self.mouse_profile, true) == index or catalog.mouseSample(self.mouse_profile, false) == index;
+    }
+};
+
 const Player = struct {
     engine: Id = null,
     limiter: Id = null,
     samples: [240]Sample = @splat(.{}),
     pools: [240]Pool = @splat(.{}),
     pool_count: usize = 0,
+    selection: Selection = .{},
 
-    fn load(self: *Player) !void {
+    fn load(self: *Player, selection: Selection) !void {
         self.engine = n.new("AVAudioEngine");
         if (self.engine == null) return failure(nil, i18n.text(.AudioOutputFailed));
         const mixer = n.m0(Id, self.engine, "mainMixerNode");
@@ -72,39 +83,90 @@ const Player = struct {
         n.m1(void, self.engine, "attachNode:", self.limiter);
         n.m3(void, self.engine, "connect:to:format:", mixer, self.limiter, nil);
         n.m3(void, self.engine, "connect:to:format:", self.limiter, n.m0(Id, self.engine, "outputNode"), nil);
-        for (catalog.files, 0..) |name, index| {
-            const buffer = try readBuffer(name);
-            self.samples[index].buffer = buffer;
-            const format = n.m0(Id, buffer, "format");
-            var pool_index: usize = 0;
-            while (pool_index < self.pool_count) : (pool_index += 1) {
-                if (n.m1(n.Bool, self.pools[pool_index].format, "isEqual:", format) != 0) break;
-            }
-            if (pool_index == self.pool_count) {
-                self.pool_count += 1;
-                const pool = &self.pools[pool_index];
-                pool.format = format; // The sample buffer owns the format.
-                // ponytail: six shared voices per PCM format; increase if bursts cut tails.
-                for (&pool.voices) |*voice| {
-                    voice.node = n.new("AVAudioPlayerNode");
-                    if (voice.node == null) return failure(nil, i18n.text(.AudioOutputFailed));
-                    n.m1(void, self.engine, "attachNode:", voice.node);
-                    n.m3(void, self.engine, "connect:to:format:", voice.node, mixer, format);
-                }
-            }
-            self.samples[index].pool = pool_index;
-            self.samples[index].duration = @intFromFloat(@as(f64, @floatFromInt(n.m0(u32, buffer, "frameLength"))) / n.m0(f64, format, "sampleRate") * 1_000_000_000);
-        }
+        try self.loadSelection(selection);
         n.m0(void, self.engine, "prepare");
         var err: Id = null;
         if (n.m1(n.Bool, self.engine, "startAndReturnError:", &err) == 0)
             return failure(nil, n.text(n.m0(Id, err, "localizedDescription")));
     }
 
+    fn disposePool(self: *Player, pool: Pool) void {
+        for (pool.voices) |voice| {
+            if (voice.node == null) continue;
+            n.m0(void, voice.node, "stop");
+            n.m1(void, self.engine, "detachNode:", voice.node);
+            n.release(voice.node);
+        }
+    }
+
+    fn loadSelection(self: *Player, selection: Selection) !void {
+        var samples: @TypeOf(self.samples) = @splat(.{});
+        errdefer for (samples) |sample| n.release(sample.buffer);
+        // Decode first: a missing/broken WAV leaves the working graph and cache intact.
+        for (catalog.files, 0..) |name, index| {
+            if (!selection.includes(index)) continue;
+            samples[index].buffer = if (self.samples[index].buffer) |buffer| n.m0(Id, buffer, "retain") else try readBuffer(name);
+            const buffer = samples[index].buffer;
+            const format = n.m0(Id, buffer, "format");
+            samples[index].duration = @intFromFloat(@as(f64, @floatFromInt(n.m0(u32, buffer, "frameLength"))) / n.m0(f64, format, "sampleRate") * 1_000_000_000);
+        }
+        var pools: @TypeOf(self.pools) = @splat(.{});
+        var count: usize = 0;
+        var reused: [240]bool = @splat(false);
+        var created: [240]bool = @splat(false);
+        errdefer for (pools[0..count], created[0..count]) |pool, is_new| {
+            if (is_new) self.disposePool(pool);
+        };
+        for (&samples) |*sample| {
+            if (sample.buffer == null) continue;
+            const format = n.m0(Id, sample.buffer, "format");
+            var index: usize = 0;
+            while (index < count) : (index += 1) {
+                if (n.m1(n.Bool, pools[index].format, "isEqual:", format) != 0) break;
+            }
+            if (index == count) {
+                count += 1;
+                var old: usize = 0;
+                while (old < self.pool_count) : (old += 1) {
+                    if (n.m1(n.Bool, self.pools[old].format, "isEqual:", format) != 0) break;
+                }
+                if (old < self.pool_count) {
+                    pools[index] = self.pools[old];
+                    reused[old] = true;
+                } else {
+                    created[index] = true;
+                    // ponytail: six voices per active PCM format; increase if bursts cut tails.
+                    for (&pools[index].voices) |*voice| {
+                        voice.node = n.new("AVAudioPlayerNode");
+                        if (voice.node == null) return failure(nil, i18n.text(.AudioOutputFailed));
+                        n.m1(void, self.engine, "attachNode:", voice.node);
+                        n.m3(void, self.engine, "connect:to:format:", voice.node, n.m0(Id, self.engine, "mainMixerNode"), format);
+                    }
+                }
+                pools[index].format = format; // Owned by a buffer in the replacement cache.
+            }
+            sample.pool = index;
+        }
+        for (self.pools[0..self.pool_count], reused[0..self.pool_count]) |pool, keep| {
+            if (keep) {
+                for (pool.voices) |voice| n.m0(void, voice.node, "stop");
+            } else self.disposePool(pool);
+        }
+        for (pools[0..count]) |*pool| for (&pool.voices) |*voice| {
+            voice.busy_until = 0;
+        };
+        for (self.samples) |sample| n.release(sample.buffer);
+        self.samples = samples;
+        self.pools = pools;
+        self.pool_count = count;
+        self.selection = selection;
+    }
+
     fn play(self: *Player, index: usize, volume: u8) void {
         if (volume == 0) return;
         const now = n.now();
         const sample = &self.samples[index];
+        if (sample.buffer == null) return;
         // Keep the original per-file 15ms gate.
         if (sample.last_play != 0 and now - sample.last_play < 15_000_000) return;
         var voice = &self.pools[sample.pool].voices[0];
@@ -121,7 +183,7 @@ const Player = struct {
 
     fn deinit(self: *Player) void {
         if (self.engine != null) n.m0(void, self.engine, "stop");
-        for (self.pools[0..self.pool_count]) |pool| for (pool.voices) |voice| n.release(voice.node);
+        for (self.pools[0..self.pool_count]) |pool| self.disposePool(pool);
         n.release(self.limiter);
         n.release(self.engine);
         for (self.samples) |sample| n.release(sample.buffer);
@@ -142,6 +204,47 @@ const Command = struct {
     preview: bool = false,
 };
 var commands: [32]Command = @splat(.{});
+pub var on_selection_error: ?*const fn (Selection, []const u8) void = null;
+var latest_change: usize = 0; // Only read/written on the main thread.
+const Change = struct { id: usize, requested: Selection, previous: Selection = .{}, message: Id = null };
+
+// Selection changes cannot be dropped with input sounds when the bounded queue is full.
+pub fn select(profile: u8, mouse_profile: u8) !void {
+    if (queue == null) return error.AudioQueueNotStarted;
+    if (profile >= catalog.keyboards.len or mouse_profile > 15) return error.InvalidSelection;
+    const change = try std.heap.c_allocator.create(Change);
+    latest_change += 1;
+    change.* = .{ .id = latest_change, .requested = .{ .profile = profile, .mouse_profile = mouse_profile } };
+    n.dispatch_async_f(queue, change, applyChange);
+}
+
+fn replace(selection: Selection) !void {
+    if (std.meta.eql(player.selection, selection)) return;
+    try player.loadSelection(selection);
+}
+
+fn applyChange(context: Id) callconv(.c) void {
+    const change: *Change = @ptrCast(@alignCast(context.?));
+    const pool = n.pool();
+    defer n.drain(pool);
+    change.previous = player.selection;
+    replace(change.requested) catch {
+        n.log(error_message);
+        change.message = n.m0(Id, n.str(error_message), "retain");
+        n.dispatch_async_f(n.mainQueue(), change, changeFailed);
+        return;
+    };
+    std.heap.c_allocator.destroy(change);
+}
+
+fn changeFailed(context: Id) callconv(.c) void {
+    const change: *Change = @ptrCast(@alignCast(context.?));
+    defer std.heap.c_allocator.destroy(change);
+    defer n.release(change.message);
+    if (change.id == latest_change) {
+        if (on_selection_error) |handler| handler(change.previous, n.text(change.message));
+    }
+}
 
 pub fn start() !void {
     queue = n.dispatch_queue_create("dev.soundy.minified.audio", nil);
@@ -156,7 +259,7 @@ fn initialize(_: Id) callconv(.c) void {
     const pool = n.pool();
     defer n.drain(pool);
     start_error = null;
-    player.load() catch |err| {
+    player.load(.{ .profile = controls.profile, .mouse_profile = controls.mouse_profile }) catch |err| {
         start_error = err;
     };
 }
@@ -194,4 +297,59 @@ fn execute(context: Id) callconv(.c) void {
 }
 pub fn preview(mouse: bool) void {
     send(if (mouse) catalog.mouseSample(controls.mouse_profile, true) else catalog.keyboardSample(controls.profile, 0, true), true);
+}
+
+pub fn smokeTest() void {
+    n.dispatch_sync_f(queue, nil, verifyCache);
+}
+fn verifyCache(_: Id) callconv(.c) void {
+    const pool = n.pool();
+    defer n.drain(pool);
+    const original = player.selection;
+    for (0..catalog.keyboards.len) |profile| {
+        replace(.{ .profile = @intCast(profile) }) catch @panic("keyboard cache load failed");
+        assertCache();
+    }
+    for (0..16) |mouse| {
+        replace(.{ .mouse_profile = @intCast(mouse) }) catch @panic("mouse cache load failed");
+        assertCache();
+    }
+    // Queue a silent buffer, then replace its cache while it is scheduled.
+    const sample = &player.samples[catalog.keyboardSample(0, 0, true).?];
+    const node = player.pools[sample.pool].voices[0].node;
+    n.m1(void, node, "setVolume:", @as(f32, 0));
+    n.m4(void, node, "scheduleBuffer:atTime:options:completionHandler:", sample.buffer, nil, @as(usize, 0), nil);
+    n.m0(void, node, "play");
+    replace(original) catch @panic("original cache restore failed");
+    const previous_engine = player.engine;
+    const previous_buffer = player.samples[catalog.keyboardSample(original.profile, 0, true).?].buffer;
+    const saved_root = root;
+    root = n.str("/nonexistent-soundy-smoke-assets");
+    const other: Selection = .{ .profile = (original.profile + 1) % 40 };
+    if (replace(other)) |_| {
+        @panic("missing sounds must fail");
+    } else |_| {}
+    root = saved_root;
+    error_message = "";
+    if (player.engine != previous_engine or player.samples[catalog.keyboardSample(original.profile, 0, true).?].buffer != previous_buffer or n.m0(n.Bool, player.engine, "isRunning") == 0)
+        @panic("failed selection must preserve the working player");
+    assertCache();
+    n.print("OK: 40 keyboard / 16 mouse selections, bounded cache, scheduled-buffer teardown and failed-load recovery\n");
+}
+fn assertCache() void {
+    var count: usize = 0;
+    for (player.samples, 0..) |sample, index| {
+        if ((sample.buffer != null) != player.selection.includes(index)) @panic("cache must contain only selected sounds");
+        count += @intFromBool(sample.buffer != null);
+    }
+    if (count > 12 or player.pool_count > count) @panic("active cache exceeded the selected set");
+}
+pub fn smokeAssertSelection() void {
+    var expected: Selection = .{ .profile = controls.profile, .mouse_profile = controls.mouse_profile };
+    n.dispatch_sync_f(queue, &expected, verifySelection);
+}
+fn verifySelection(context: Id) callconv(.c) void {
+    const expected: *const Selection = @ptrCast(@alignCast(context.?));
+    if (!std.meta.eql(player.selection, expected.*)) @panic("queued selection did not reach the player");
+    assertCache();
 }

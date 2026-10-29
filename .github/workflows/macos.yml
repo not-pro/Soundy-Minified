@@ -72,6 +72,7 @@ jobs:
           pkgutil --expand-full "dist/Soundy-Minified-v${version}-macos-${ARCH}.pkg" "$expanded"
           app="$expanded/Soundy-Minified-component.pkg/Payload/Soundy Minified.app"
           cmp assets/icons/Soundy.icns "$app/Contents/Resources/Soundy.icns"
+          cmp assets/i18n.json "$app/Contents/Resources/i18n.json"
           test -s "$expanded/Resources/welcome.rtfd/TXT.rtf"
           test -s "$expanded/Resources/conclusion.rtfd/TXT.rtf"
           codesign --verify --strict "$app"
