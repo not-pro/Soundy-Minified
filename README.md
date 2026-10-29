@@ -48,7 +48,7 @@ The PKG, ZIP, and checksum files will be created in `dist/`. Installer pages are
 
 For development, use `zig build run`. CLI options include `--sounds-dir PATH`, `--check`, `--preview`, `--preview-mouse`, `--smoke-test`, `--version` and `--help`. `--check` decodes all 240 WAVs without opening audio output or monitoring input. `--smoke-test` checks the native menus in all three languages, all keyboard/mouse cache selections, switching during playback, failed-load recovery and saved settings in an isolated defaults suite, then exits; it opens audio output but never starts input monitoring.
 
-`zig build -Dtarget=x86_64-macos.13.0 --release=small` builds for Intel on an Apple Silicon Mac. CI builds and packages both architectures on native macOS runners. Artifacts are attached to workflow runs; pushing a tag matching `VERSION` (for example `v1.0.0`) publishes a release. Binaries use ad hoc signing, as in the original project.
+`zig build -Dtarget=x86_64-macos.13.0 --release=small` builds for Intel on an Apple Silicon Mac. CI builds and packages both architectures on native macOS runners. Artifacts are attached to workflow runs; pushing a tag matching `VERSION` (for example `v1.0.1`) publishes a release. Binaries use ad hoc signing, as in the original project.
 
 Only the selected keyboard pack and mouse pair are kept decoded in memory (at most 12 buffers). Changing a sound loads the replacement on the serial audio queue, then stops old playback, frees obsolete buffers/nodes, and reuses the engine and compatible voice pools. A failed load keeps the working selection and restores its preferences. All 240 files remain bundled and are validated by `--check`.
 
