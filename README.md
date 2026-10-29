@@ -6,6 +6,10 @@
 
 # Soundy Minified
 
+**Soundy Minified is the compact, low-memory edition of classic Soundy, rewritten in Zig.** It reduces RAM use by keeping only the selected keyboard pack and mouse sounds decoded, while reusing the audio engine. Classic Soundy preloads the entire sound catalog. All 240 sounds remain included in the download.
+
+In version **1.0.1**, measured physical memory footprint with Tactile was about **14 MiB after startup** and **16 MiB after 168 profile changes**, down from **34.5 MiB in Minified 1.0.0**. These are medians of three runs on the development Mac without input monitoring; the classic Rust app was not benchmarked separately. Actual usage depends on the selected sounds and system.
+
 Soundy Minified adds keyboard and mouse sounds to macOS. Mechanical keys, typewriters, electronic tones, and playful effects make everyday computer use more enjoyable.
 
 Pick a sound to match your mood: **40 keyboard profiles and 15 mouse sound options**. All 240 sounds are bundled with the app — no extra downloads needed.
